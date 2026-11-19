@@ -3,7 +3,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useApiKey } from "@/lib/api-key";
 import {
-  contents,
   getResearchTask,
   research,
   YouApiError,
@@ -11,6 +10,7 @@ import {
   type ResearchSource,
 } from "@/lib/you-client";
 import { CitedMarkdown } from "./Markdown";
+import { PagePreview } from "./PagePreview";
 
 type Effort = "lite" | "standard" | "deep";
 
@@ -72,34 +72,6 @@ function isOnList(url: string, domains: string[]): boolean {
   return domains.some((d) => host === d || host.endsWith(`.${d}`));
 }
 
-/** Pull the first substantial text field out of a loosely-typed response. */
-function firstTextField(data: unknown, depth = 0): string | null {
-  if (depth > 4 || data === null || data === undefined) return null;
-  if (typeof data === "string") {
-    return data.trim().length > 40 ? data : null;
-  }
-  if (Array.isArray(data)) {
-    for (const item of data) {
-      const found = firstTextField(item, depth + 1);
-      if (found) return found;
-    }
-    return null;
-  }
-  if (typeof data === "object") {
-    const o = data as Record<string, unknown>;
-    for (const key of ["markdown", "content", "text", "html"]) {
-      if (typeof o[key] === "string" && (o[key] as string).trim().length > 40) {
-        return o[key] as string;
-      }
-    }
-    for (const value of Object.values(o)) {
-      const found = firstTextField(value, depth + 1);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
 function ElapsedSince({ start }: { start: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -112,12 +84,6 @@ function ElapsedSince({ start }: { start: number }) {
     </span>
   );
 }
-
-type Preview = {
-  url: string;
-  status: "loading" | "done" | "error";
-  text?: string;
-};
 
 export function SiteResearchApp() {
   const { apiKey, clearApiKey } = useApiKey();
@@ -135,7 +101,7 @@ export function SiteResearchApp() {
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [likelyTimeout, setLikelyTimeout] = useState(false);
-  const [preview, setPreview] = useState<Preview | null>(null);
+  const [preview, setPreview] = useState<ResearchSource | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
@@ -232,23 +198,6 @@ export function SiteResearchApp() {
         setLikelyTimeout(true);
       }
       setPhase("idle");
-    }
-  }
-
-  async function loadPreview(url: string) {
-    if (!apiKey) return;
-    setPreview({ url, status: "loading" });
-    try {
-      const data = await contents(apiKey, { urls: [url] });
-      const text =
-        firstTextField(data) ?? JSON.stringify(data, null, 2).slice(0, 3000);
-      setPreview({ url, status: "done", text: text.slice(0, 4000) });
-    } catch (err) {
-      setPreview({
-        url,
-        status: "error",
-        text: err instanceof Error ? err.message : "Preview failed.",
-      });
     }
   }
 
@@ -477,9 +426,9 @@ export function SiteResearchApp() {
                       <button
                         type="button"
                         className="text-muted underline transition hover:text-ink"
-                        onClick={() => void loadPreview(s.url)}
+                        onClick={() => setPreview(s)}
                       >
-                        preview
+                        check
                       </button>
                     </li>
                   );
@@ -488,29 +437,14 @@ export function SiteResearchApp() {
             </div>
           )}
 
-          {preview && (
-            <div className="mt-4 rounded-lg border border-edge bg-surface p-4">
-              <div className="flex items-center justify-between gap-3">
-                <p className="truncate text-xs text-muted">
-                  Contents API preview: {preview.url}
-                </p>
-                <button
-                  type="button"
-                  className="text-xs text-muted transition hover:text-ink"
-                  onClick={() => setPreview(null)}
-                >
-                  Close
-                </button>
-              </div>
-              {preview.status === "loading" && (
-                <p className="mt-2 text-xs text-muted">Fetching clean page content...</p>
-              )}
-              {preview.status !== "loading" && (
-                <pre className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap text-xs text-ink/80">
-                  {preview.text}
-                </pre>
-              )}
-            </div>
+          {preview && apiKey && (
+            <PagePreview
+              // Remount per source so each one starts from a fresh read.
+              key={preview.url}
+              apiKey={apiKey}
+              source={preview}
+              onClose={() => setPreview(null)}
+            />
           )}
 
           <div className="mt-4 text-center">

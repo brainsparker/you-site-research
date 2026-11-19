@@ -17,10 +17,24 @@ const UPSTREAM = "https://api.you.com";
 
 const ALLOWED_PATHS = [
   "v1/search",
-  "v1/contents",
+  "v1/extract",
+  "v1/contents", // deprecated 2026-11-16, kept for forks that still call it
   "v1/research",
   "v1/finance_research",
 ];
+
+// Paths documented on a different host than UPSTREAM. The Extract API
+// reference names https://ydc-index.io/v1/extract.
+const UPSTREAM_OVERRIDES: Record<string, string> = {
+  "v1/extract": "https://ydc-index.io",
+};
+
+function upstreamFor(path: string): string {
+  for (const [prefix, host] of Object.entries(UPSTREAM_OVERRIDES)) {
+    if (path === prefix || path.startsWith(`${prefix}/`)) return host;
+  }
+  return UPSTREAM;
+}
 
 // Never forward these from the incoming request.
 const STRIP_REQUEST_HEADERS = new Set([
@@ -62,7 +76,7 @@ async function proxy(req: Request, pathSegments: string[]): Promise<Response> {
   }
 
   const incoming = new URL(req.url);
-  const upstreamUrl = `${UPSTREAM}/${joined}${incoming.search}`;
+  const upstreamUrl = `${upstreamFor(joined)}/${joined}${incoming.search}`;
 
   const headers = new Headers();
   req.headers.forEach((value, key) => {

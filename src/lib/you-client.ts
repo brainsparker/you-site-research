@@ -23,10 +23,53 @@ export class YouApiError extends Error {
   constructor(
     message: string,
     public status: number,
+    /** Stable machine-readable error code, when the API sends one. */
+    public code?: string,
+    /** True when the API says the same request may succeed if sent again. */
+    public retryable = false,
   ) {
     super(message);
     this.name = "YouApiError";
   }
+}
+
+/**
+ * Read an error body into message, code and retryable.
+ *
+ * Two shapes are in the wild. The Extract API nests a stable contract:
+ *   { "error": { "code": "timeout", "message": "...", "retryable": true } }
+ * Gateway responses (401, 402, 403) and the older endpoints are flat:
+ *   { "detail": "..." }, { "message": "..." } or
+ *   { "error": "payment_required", "message": "..." }
+ */
+export function parseErrorBody(
+  body: unknown,
+  fallback: string,
+): { message: string; code?: string; retryable: boolean } {
+  if (typeof body !== "object" || body === null) {
+    return { message: fallback, retryable: false };
+  }
+  const o = body as Record<string, unknown>;
+  const str = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim() ? v : undefined;
+
+  if (typeof o.error === "object" && o.error !== null) {
+    const e = o.error as Record<string, unknown>;
+    const code = str(e.code);
+    return {
+      message: str(e.message) ?? code ?? fallback,
+      code,
+      retryable: e.retryable === true,
+    };
+  }
+
+  const flatError = str(o.error);
+  const message = str(o.message) ?? str(o.detail);
+  if (flatError && message) {
+    // { error: "payment_required", message: "Your prepaid credit ..." }
+    return { message, code: flatError, retryable: false };
+  }
+  return { message: message ?? flatError ?? fallback, retryable: false };
 }
 
 async function request<T>(
@@ -45,14 +88,22 @@ async function request<T>(
   });
 
   if (!res.ok) {
-    let detail = res.statusText || `Request failed (${res.status})`;
+    const fallback = res.statusText || `Request failed (${res.status})`;
+    let parsed: ReturnType<typeof parseErrorBody> = {
+      message: fallback,
+      retryable: false,
+    };
     try {
-      const data = (await res.json()) as { error?: string; detail?: string };
-      detail = data.error ?? data.detail ?? detail;
+      parsed = parseErrorBody(await res.json(), fallback);
     } catch {
       // Non-JSON error body; keep the status text.
     }
-    throw new YouApiError(detail, res.status);
+    throw new YouApiError(
+      parsed.message,
+      res.status,
+      parsed.code,
+      parsed.retryable,
+    );
   }
 
   return (await res.json()) as T;
@@ -67,13 +118,67 @@ export function search(
   return request("v1/search", apiKey, { body: params, signal });
 }
 
-/** POST /v1/contents: clean page content for one or more URLs. */
+/**
+ * POST /v1/contents: clean page content for one or more URLs.
+ *
+ * @deprecated You.com deprecated the Contents API on 2026-11-16. It still
+ * works but gets no new features. Use {@link extract} for new code.
+ */
 export function contents(
   apiKey: string,
   params: { urls: string[]; [key: string]: unknown },
   signal?: AbortSignal,
 ): Promise<unknown> {
   return request("v1/contents", apiKey, { body: params, signal });
+}
+
+// --- Extract API (contract from you.com/docs/api-reference/extract, 2026-11-19) ---
+
+export type ExtractionSource = "blend" | "cache" | "fetch";
+
+export type ExtractParams = {
+  /** One webpage or PDF per request. */
+  url: string;
+  /**
+   * Where the content comes from. "blend" (default) serves a cached copy
+   * when one exists and crawls live when not, "cache" never crawls, and
+   * "fetch" always crawls the page live.
+   */
+  extraction_source?: ExtractionSource;
+  /** Cap on the whole request in seconds, 2 to 100 (default 30). */
+  timeout?: number;
+  /**
+   * PDFs only. "standard" (default) also reads charts and images and bills
+   * per PDF page; "lite" reads the embedded text with no page charge.
+   */
+  parse_effort?: "lite" | "standard";
+  /** Ask for HTML as well as Markdown. Markdown is the default. */
+  full_page?: { extraction_formats: Array<"markdown" | "html"> };
+};
+
+export type ExtractResult = {
+  url?: string;
+  title?: string;
+  extraction_source?: ExtractionSource;
+  /** Missing or empty when nothing was extracted (for example a cache miss). */
+  contents?: {
+    full_page?: { markdown?: string; html?: string };
+  };
+  metadata?: { site_name?: string; favicon_url?: string };
+};
+
+/**
+ * POST /v1/extract: one webpage or PDF as clean Markdown (or HTML).
+ * Replaces the Contents API. Errors carry a stable `code` and a
+ * `retryable` flag, surfaced on YouApiError: branch on those, not on the
+ * message. To read several URLs, send the requests concurrently.
+ */
+export function extract(
+  apiKey: string,
+  params: ExtractParams,
+  signal?: AbortSignal,
+): Promise<ExtractResult> {
+  return request("v1/extract", apiKey, { body: params, signal });
 }
 
 // --- Research API (contract verified against you.com/docs, 2026-08-12) ---
