@@ -17,7 +17,7 @@ const STEPS = [
   {
     n: "3",
     title: "Check it",
-    body: "A cited answer, a list of the exact pages consulted, and a Contents API preview of any page's clean text.",
+    body: "A cited answer, a list of the exact pages consulted, and a one-click check of any page: its live text, and whether the cited excerpts are on it.",
   },
 ];
 

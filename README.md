@@ -24,7 +24,8 @@ The research agent plans searches, reads pages, and synthesizes an answer while 
 
 - **Live, not stale**: answers come from the live index, not last month's crawl
 - **Scope you can check**: every source is listed with an on-list/off-list badge
-- **Page previews**: one click runs the Contents API on any consulted page and shows its clean text
+- **Check the page**: one click reads any consulted page or PDF through the [Extract API](https://you.com/docs/guides/extract), renders it as Markdown, and marks which of the excerpts the agent cited are actually on it
+- **Live when it matters**: "Fetch it live" re-reads the page with `extraction_source: "fetch"`, so you compare the answer against the page as it is now, not a cached copy
 - **One key, BYOK**: the visitor's You.com key stays in their browser
 
 ## Quickstart (local)
@@ -60,10 +61,38 @@ Key files:
 
 | File | Purpose |
 | --- | --- |
-| `src/components/SiteResearchApp.tsx` | Domain chips, effort/freshness controls, scope badges, Contents previews |
+| `src/components/SiteResearchApp.tsx` | Domain chips, effort/freshness controls, scope badges |
+| `src/components/PagePreview.tsx` | The check panel: Extract call, rendered page, cited-excerpt check, live refetch, typed errors |
+| `src/lib/page-check.ts` | Pure helpers: preview request params, response reading, excerpt matching |
 | `src/components/Markdown.tsx` | Cited markdown rendering (handles `[[1]]` and `[[1, 2]]` groups) |
-| `src/lib/you-client.ts` | Typed Research client including `SourceControl` |
-| `src/app/api/you/[...path]/route.ts` | Locked-down proxy with per-request key forwarding |
+| `src/lib/you-client.ts` | Typed Research and Extract clients, including `SourceControl` and error `code`/`retryable` |
+| `src/app/api/you/[...path]/route.ts` | Locked-down proxy with per-request key forwarding; routes `v1/extract` to `ydc-index.io` |
+
+## Checking a page with the Extract API
+
+Every consulted page has a "check" link. It sends one request:
+
+```json
+POST /v1/extract
+{
+  "url": "https://stripe.com/pricing",
+  "timeout": 15
+}
+```
+
+and reads the page from `contents.full_page.markdown`. Three things are worth copying:
+
+| Choice | Why |
+| --- | --- |
+| `timeout: 15` | Caps the whole request under the hosted 20 second window, so a slow page returns a typed `timeout` error instead of a cut connection |
+| `extraction_source: "fetch"` on "Fetch it live" | The default (`blend`) may serve a cached copy. `fetch` always crawls, which is what you want when checking a price or a policy |
+| `parse_effort: "lite"` for `.pdf` URLs | Reads the PDF's embedded text with no per-page charge, enough for a preview |
+
+Errors carry a stable `code` and a `retryable` flag ([reference](https://you.com/docs/api-reference/extract)), surfaced on `YouApiError`. The panel offers "Try again" only when the API says a retry can work. A `200` with no `contents` means nothing was extracted, so check before reading.
+
+The excerpt check compares each `sources[].snippets` entry with the page text after stripping Markdown, punctuation, and case. "On the page" means the whole excerpt matched, "partly on the page" means a run of 8 consecutive words matched (excerpts are often trimmed), and "not found" means neither did. It is a quick signal, not proof: a miss can also mean the page changed after it was indexed.
+
+Extract replaces the Contents API, which You.com deprecated on 2026-11-16. Pricing is $0.90 per 1,000 URLs. The `contents()` client function and the `v1/contents` proxy path are still here for forks that call them, marked deprecated.
 
 ## Deploy to Webflow Cloud
 
@@ -78,7 +107,7 @@ Do not add `export const runtime = "edge"` to route handlers: Webflow Cloud buil
 1. Start from [you-app-template](https://github.com/brainsparker/you-app-template).
 2. Normalize user input into bare domains (see `normalizeDomain`) and pass them as `source_control.include_domains`.
 3. Render the answer with citations linked to `output.sources`, and badge any off-scope source; trust the constraint because you can see it holding.
-4. Use the Contents API for one-click previews of consulted pages.
+4. Use the Extract API to read any consulted page, and check the cited excerpts against it (see `page-check.ts`).
 
 ## License
 
